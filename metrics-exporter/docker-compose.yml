@@ -1,0 +1,25 @@
+services:
+  metrics-collector:
+    build: .
+    container_name: metrics-collector
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    environment:
+      - METRICS_PORT=8000
+      - COLLECTION_INTERVAL=5
+      - DOCKER_COLLECTION_INTERVAL=30
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
+      - DOCKER_HOST=unix:///var/run/docker.sock        
+    labels:
+      - "com.docker.compose.project=metrics"
+    user: "0:0"  # Run as root to access Docker socket
+    security_opt:
+      - no-new-privileges:true
+
