@@ -1,3 +1,14 @@
+## 📌 Table of Contents
+
+- [Features](#✨-features)
+- [Tech Stack](#🧰-tech-stack)
+- [Architecture Overview](#🏗-architecture-overview)
+- [Metrics Endpoint](#🚀-metrics-endpoint)
+- [Metrics Exposed](#📦-metrics-exposed)
+- [Environment Variables](#🛠-environment-variables)
+- [Run with Docker Compose (Recommended)](#🐳-run-with-docker-compose-recommended)
+- [About](#about)
+
 # Metrics Exporter 🚀
 
 A **custom Prometheus metrics exporter** written in Python for monitoring
