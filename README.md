@@ -116,6 +116,26 @@ http://<host>:8000/metrics
 | DOCKER_COLLECTION_INTERVAL | 30 | Docker stats interval (seconds) |
 
 ---
+## 🐳 Dockerfile
+
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app/exporter.py .
+EXPOSE 8000
+CMD ["python", "exporter.py"]
+
 
 ## 🐳 Run with Docker Compose (Recommended)
 docker-compose up -d
+
+## 📈 Prometheus Scrape Config
+
+In `prometheus.yml`:
+
+scrape_configs:
+  - job_name: "metrics-exporter"
+    static_configs:
+      - targets: ["<host-ip>:8000"]
+
