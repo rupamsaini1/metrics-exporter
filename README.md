@@ -118,6 +118,7 @@ http://<host>:8000/metrics
 ---
 ## 🐳 Dockerfile
 
+```dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
@@ -134,6 +135,7 @@ docker-compose up -d
 
 In `prometheus.yml`:
 
+```yaml
 scrape_configs:
   - job_name: "metrics-exporter"
     static_configs:
