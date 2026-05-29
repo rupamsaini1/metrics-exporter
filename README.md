@@ -1,143 +1,166 @@
-## 📌 Table of Contents
+# Metrics Exporter
 
-- [Features](#✨-features)
-- [Tech Stack](#🧰-tech-stack)
-- [Architecture Overview](#🏗-architecture-overview)
-- [Metrics Endpoint](#🚀-metrics-endpoint)
-- [Metrics Exposed](#📦-metrics-exposed)
-- [Environment Variables](#🛠-environment-variables)
-- [Run with Docker Compose (Recommended)](#🐳-run-with-docker-compose-recommended)
-- [About](#about)
+A custom Prometheus metrics exporter written in Python for Linux hosts, Docker environments, Docker Compose services, and optional PostgreSQL monitoring.
 
-# Metrics Exporter 🚀
+The exporter collects host system metrics, Docker container metrics, Docker Compose container status, PostgreSQL database metrics, and top host processes. Metrics are exposed in Prometheus format for Grafana dashboards and alerting.
 
-A **custom Prometheus metrics exporter** written in Python for monitoring
-**Linux host systems and Docker environments**.
+## Features
 
-This exporter collects **system metrics, Docker container metrics,
-Docker Compose container status, and top host processes**, and exposes
-them in Prometheus format for **Grafana dashboards and alerting**.
-
-> ⚠️ **Note:**  
-> This project was **generated with the assistance of AI** and then reviewed,
-> tested, and structured by the author for learning and demonstration purposes.
-> The design decisions, deployment strategy, and documentation reflect
-> real-world DevOps practices.
-
----
-
-## ✨ Features
-
-### 🔹 System Metrics
-- CPU usage (host-level)
-- RAM usage (used, total, percentage)
-- Swap usage
-- Disk usage per mountpoint
-- Top CPU & memory consuming host processes
-
-### 🔹 Docker Metrics
-- Container CPU usage
-- Container memory usage & limits
-- Docker Compose container status (Up / Down)
-- Project-level labeling using Compose metadata
-
-### 🔹 Production-Ready Design
-- Reads **host `/proc`** when mounted
-- Graceful Docker connectivity handling
-- Optimized collection intervals
-- Threaded container metric collection
+- Host CPU, RAM, swap, disk, network, and block I/O metrics
+- System CPU I/O wait percentage
+- Top host processes by CPU and memory usage
+- Docker container CPU, memory, network, and block I/O metrics
+- Docker Compose container status with Compose project labels
+- Optional PostgreSQL availability, connection, transaction, cache, tuple, and database size metrics
+- Configurable collection intervals and log level
 - Prometheus-compatible `/metrics` endpoint
 
----
+## Tech Stack
 
-## 🧰 Tech Stack
-
-- Python 3
+- Python 3.11
 - Prometheus Client
-- Docker SDK
+- Docker SDK for Python
 - psutil
+- psycopg2
 - Docker / Docker Compose
-- Grafana
+- Grafana / Prometheus
 
----
+## Metrics Endpoint
 
-## 🏗 Architecture Overview
-
-Linux Host
-├─ System Metrics (CPU, RAM, Disk, Processes)
-├─ Docker Daemon
-│ ├─ Containers
-│ └─ Compose Projects
-│
-└─ Metrics Exporter
-↓
-Prometheus
-↓
-Grafana
-
-## 🚀 Metrics Endpoint
+```text
 http://<host>:8000/metrics
+```
 
-## 📦 Metrics Exposed
+## Metrics Exposed
 
-### 🔹 System Metrics
-- system_cpu_usage_percent
-- system_ram_usage_bytes
-- system_ram_total_bytes
-- system_ram_usage_percent
-- system_swap_usage_bytes
-- system_swap_total_bytes
-- system_swap_usage_percent
-- system_disk_usage_bytes{mountpoint}
-- system_disk_total_bytes{mountpoint}
-- system_disk_usage_percent{mountpoint}
+### System Metrics
 
-### 🔹 Docker Metrics
-- container_cpu_usage_percent{container_name, project}
-- container_memory_usage_bytes{container_name, project}
-- container_memory_limit_bytes{container_name, project}
+- `server_status`
+- `system_cpu_usage_percent`
+- `system_io_wait_percent`
+- `system_ram_usage_bytes`
+- `system_ram_total_bytes`
+- `system_ram_usage_percent`
+- `system_swap_usage_bytes`
+- `system_swap_total_bytes`
+- `system_swap_usage_percent`
+- `system_disk_usage_bytes{mountpoint}`
+- `system_disk_total_bytes{mountpoint}`
+- `system_disk_usage_percent{mountpoint}`
+- `system_network_receive_bytes_total{interface}`
+- `system_network_transmit_bytes_total{interface}`
+- `system_network_receive_bytes_per_second{interface}`
+- `system_network_transmit_bytes_per_second{interface}`
+- `system_network_receive_packets_per_second{interface}`
+- `system_block_read_bytes_total{device}`
+- `system_block_write_bytes_total{device}`
+- `system_block_read_bytes_per_second{device}`
+- `system_block_write_bytes_per_second{device}`
+- `system_block_read_ops_total{device}`
+- `system_block_write_ops_total{device}`
 
-### 🔹 Docker Compose Status
-- docker_compose_container_status{container_name, project}
-- docker_compose_container_status_flat{name}
+### Docker Metrics
 
-### 🔹 Top Processes
-- top_process_cpu_usage_percent{pid, name}
-- top_process_memory_usage_bytes{pid, name}
+- `container_cpu_usage_percent{container_name, project}`
+- `container_memory_usage_bytes{container_name, project}`
+- `container_memory_limit_bytes{container_name, project}`
+- `container_network_receive_bytes_total{container_name, project, interface}`
+- `container_network_transmit_bytes_total{container_name, project, interface}`
+- `container_network_receive_bytes_per_second{container_name, project, interface}`
+- `container_network_transmit_bytes_per_second{container_name, project, interface}`
+- `container_network_receive_packets_per_second{container_name, project, interface}`
+- `container_block_read_bytes_total{container_name, project}`
+- `container_block_write_bytes_total{container_name, project}`
+- `container_block_read_bytes_per_second{container_name, project}`
+- `container_block_write_bytes_per_second{container_name, project}`
 
----
+### Docker Compose Status
 
-## 🛠 Environment Variables
+- `docker_compose_container_status{container_name, project}`
+- `docker_compose_container_status_flat{name}`
+
+### PostgreSQL Metrics
+
+- `postgres_up{database}`
+- `postgres_connections{database}`
+- `postgres_max_connections{database}`
+- `postgres_xact_commit_total{database}`
+- `postgres_xact_rollback_total{database}`
+- `postgres_blks_read_total{database}`
+- `postgres_blks_hit_total{database}`
+- `postgres_tup_returned_total{database}`
+- `postgres_tup_fetched_total{database}`
+- `postgres_tup_inserted_total{database}`
+- `postgres_tup_updated_total{database}`
+- `postgres_tup_deleted_total{database}`
+- `postgres_database_size_bytes{database}`
+- `postgres_active_connections{database, state}`
+
+### Top Processes
+
+- `top_process_cpu_usage_percent{pid, name}`
+- `top_process_memory_usage_bytes{pid, name}`
+
+## Environment Variables
 
 | Variable | Default | Description |
-|--------|--------|-------------|
-| METRICS_PORT | 8000 | Metrics HTTP port |
-| COLLECTION_INTERVAL | 5 | System metrics interval (seconds) |
-| DOCKER_COLLECTION_INTERVAL | 30 | Docker stats interval (seconds) |
+| --- | --- | --- |
+| `METRICS_PORT` | `8000` | Metrics HTTP port. |
+| `COLLECTION_INTERVAL` | `5` | Host metric collection interval in seconds. |
+| `DOCKER_COLLECTION_INTERVAL` | `30` | Docker stats collection interval in seconds. |
+| `LOG_LEVEL` | `INFO` | Python logging level. |
+| `SUMMARY_LOG_EVERY` | `12` | Collection cycles between summary log messages. |
+| `POSTGRES_URL` | unset | PostgreSQL connection string. Takes precedence over individual PostgreSQL settings. |
+| `POSTGRES_HOST` | unset | PostgreSQL host. Enables PostgreSQL metrics when `POSTGRES_URL` is not set. |
+| `POSTGRES_PORT` | `5432` | PostgreSQL port. |
+| `POSTGRES_DB` | `postgres` | PostgreSQL database used for the metrics connection. |
+| `POSTGRES_USER` | unset | PostgreSQL username. |
+| `POSTGRES_PASSWORD` | unset | PostgreSQL password. |
+| `POSTGRES_SSLMODE` | `prefer` | PostgreSQL SSL mode. |
 
----
-## 🐳 Dockerfile
+PostgreSQL metrics are disabled automatically when neither `POSTGRES_URL` nor `POSTGRES_HOST` is configured.
 
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY app/exporter.py .
-EXPOSE 8000
-CMD ["python", "exporter.py"]
+## Run With Docker Compose
 
+```bash
+cd metrics-exporter
+docker compose up -d --build
+```
 
-## 🐳 Run with Docker Compose (Recommended)
-docker-compose up -d
+The compose file exposes the exporter on port `8000` and mounts Docker plus host proc/sys paths so the exporter can read host and container metrics.
 
-## 📈 Prometheus Scrape Config
+To enable PostgreSQL metrics, add PostgreSQL configuration to the `metrics-collector` service:
 
-In `prometheus.yml`:
+```yaml
+environment:
+  - POSTGRES_HOST=postgres
+  - POSTGRES_PORT=5432
+  - POSTGRES_DB=postgres
+  - POSTGRES_USER=postgres
+  - POSTGRES_PASSWORD=postgres
+```
+
+You can also use a connection string:
+
+```yaml
+environment:
+  - POSTGRES_URL=postgresql://postgres:postgres@postgres:5432/postgres
+```
+
+## Local Run
+
+```bash
+cd metrics-exporter
+pip install -r requirements.txt
+python metrics_collector.py
+```
+
+## Prometheus Scrape Config
 
 ```yaml
 scrape_configs:
-  - job_name: "metrics-exporter"
+  - job_name: metrics-exporter
     static_configs:
-      - targets: ["<host-ip>:8000"]
-
+      - targets:
+          - <host-ip>:8000
+```

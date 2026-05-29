@@ -14,7 +14,8 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, log_level, logging.INFO), format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Use host /proc if mounted
@@ -26,6 +27,9 @@ else:
 
 class MetricsCollector:
     def __init__(self):
+        self.collection_runs = 0
+        self.summary_log_every = max(1, int(os.getenv("SUMMARY_LOG_EVERY", 12)))
+
         # Initialize Docker client
         try:
             self.docker_client = None
@@ -62,6 +66,10 @@ class MetricsCollector:
         self.disk_total = Gauge('system_disk_total_bytes', 'Total disk space in bytes', ['mountpoint'])
         self.disk_usage_percent = Gauge('system_disk_usage_percent', 'Disk usage percentage', ['mountpoint'])
         self.server_status = Gauge('server_status', 'Server status for dashboards: 1=up, 0=down')
+        self.system_io_wait_percent = Gauge(
+            'system_io_wait_percent',
+            'System-wide CPU I/O wait percentage'
+        )
 
         self.system_network_receive_bytes = Gauge(
             'system_network_receive_bytes_total',
@@ -119,6 +127,25 @@ class MetricsCollector:
             'Total write operations by the host block device',
             ['device']
         )
+
+        self.postgres_up = Gauge('postgres_up', 'PostgreSQL availability status: 1=up, 0=down', ['database'])
+        self.postgres_connections = Gauge('postgres_connections', 'Number of active PostgreSQL connections', ['database'])
+        self.postgres_max_connections = Gauge('postgres_max_connections', 'PostgreSQL max connections setting', ['database'])
+        self.postgres_xact_commit = Gauge('postgres_xact_commit_total', 'Total number of committed transactions', ['database'])
+        self.postgres_xact_rollback = Gauge('postgres_xact_rollback_total', 'Total number of rolled back transactions', ['database'])
+        self.postgres_blks_read = Gauge('postgres_blks_read_total', 'Total disk blocks read from PostgreSQL', ['database'])
+        self.postgres_blks_hit = Gauge('postgres_blks_hit_total', 'Total disk blocks found in PostgreSQL cache', ['database'])
+        self.postgres_tup_returned = Gauge('postgres_tup_returned_total', 'Total tuples returned by PostgreSQL', ['database'])
+        self.postgres_tup_fetched = Gauge('postgres_tup_fetched_total', 'Total tuples fetched by PostgreSQL', ['database'])
+        self.postgres_tup_inserted = Gauge('postgres_tup_inserted_total', 'Total tuples inserted into PostgreSQL', ['database'])
+        self.postgres_tup_updated = Gauge('postgres_tup_updated_total', 'Total tuples updated in PostgreSQL', ['database'])
+        self.postgres_tup_deleted = Gauge('postgres_tup_deleted_total', 'Total tuples deleted from PostgreSQL', ['database'])
+        self.postgres_database_size = Gauge('postgres_database_size_bytes', 'PostgreSQL database size in bytes', ['database'])
+        self.postgres_connection_state = Gauge('postgres_active_connections', 'Number of active PostgreSQL connections grouped by state', ['database', 'state'])
+
+        self.postgres_metrics_enabled = False
+        self.postgres_conn_info = None
+        self._init_postgres()
 
         self.container_cpu_usage = Gauge('container_cpu_usage_percent', 'Container CPU usage percentage', ['container_name', 'project'])
         self.container_memory_usage = Gauge('container_memory_usage_bytes', 'Container memory usage in bytes', ['container_name', 'project'])
@@ -190,6 +217,12 @@ class MetricsCollector:
         self._previous_container_network = {}
         self._previous_container_block = {}
 
+        logger.info(
+            "Metrics collector initialized (docker_enabled=%s, summary_log_every=%s)",
+            self.docker_client is not None,
+            self.summary_log_every,
+        )
+
     def _calculate_rate(self, previous_total, current_total, elapsed_seconds):
         if elapsed_seconds <= 0:
             return 0.0
@@ -207,6 +240,120 @@ class MetricsCollector:
             return True, f"Connected to Docker {version_info.get('Version', 'unknown')}, found {len(containers)} containers"
         except Exception as e:
             return False, f"Docker connectivity test failed: {e}"
+
+    def _init_postgres(self):
+        postgres_url = os.getenv('POSTGRES_URL')
+        postgres_db = os.getenv('POSTGRES_DB', 'postgres')
+        postgres_host = os.getenv('POSTGRES_HOST')
+
+        if postgres_url:
+            self.postgres_conn_info = postgres_url
+        elif postgres_host:
+            self.postgres_conn_info = {
+                'dbname': postgres_db,
+                'host': postgres_host,
+                'port': int(os.getenv('POSTGRES_PORT', 5432)),
+                'user': os.getenv('POSTGRES_USER'),
+                'password': os.getenv('POSTGRES_PASSWORD'),
+                'sslmode': os.getenv('POSTGRES_SSLMODE', 'prefer'),
+            }
+        else:
+            logger.info("PostgreSQL metrics disabled because no POSTGRES_URL or POSTGRES_HOST configuration was provided")
+            return
+
+        try:
+            import psycopg2
+            self.psycopg2 = psycopg2
+            self.postgres_metrics_enabled = True
+            connected, status = self.test_postgres_connectivity()
+            logger.info("PostgreSQL metrics enabled=%s (%s)", connected, status)
+        except ImportError:
+            logger.error("psycopg2-binary is required for PostgreSQL metrics but is not installed")
+            self.postgres_metrics_enabled = False
+        except Exception as e:
+            logger.error(f"Unable to initialize PostgreSQL metrics: {e}")
+            self.postgres_metrics_enabled = False
+
+    def _get_postgres_connection(self):
+        if not self.postgres_conn_info:
+            raise RuntimeError("PostgreSQL connection info not configured")
+        if isinstance(self.postgres_conn_info, str):
+            return self.psycopg2.connect(self.postgres_conn_info)
+        return self.psycopg2.connect(**self.postgres_conn_info)
+
+    def test_postgres_connectivity(self):
+        if not self.postgres_metrics_enabled:
+            return False, "PostgreSQL metrics disabled"
+        try:
+            with self._get_postgres_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute('SELECT 1')
+                    cur.fetchone()
+            return True, "PostgreSQL connectivity test passed"
+        except Exception as e:
+            return False, f"PostgreSQL connectivity test failed: {e}"
+
+    def collect_postgres_metrics(self):
+        if not self.postgres_metrics_enabled:
+            return
+        try:
+            with self._get_postgres_connection() as conn:
+                with conn.cursor() as cur:
+                    # Collect metrics for every database in the cluster
+                    cur.execute(
+                        """
+                        SELECT datname,
+                               numbackends,
+                               xact_commit,
+                               xact_rollback,
+                               blks_read,
+                               blks_hit,
+                               tup_returned,
+                               tup_fetched,
+                               tup_inserted,
+                               tup_updated,
+                               tup_deleted
+                        FROM pg_stat_database
+                        WHERE datname NOT IN ('template0', 'template1')
+                        """
+                    )
+                    for row in cur.fetchall():
+                        (db_name, numbackends, xact_commit, xact_rollback, blks_read, blks_hit,
+                         tup_returned, tup_fetched, tup_inserted, tup_updated, tup_deleted) = row
+
+                        self.postgres_up.labels(database=db_name).set(1)
+                        self.postgres_connections.labels(database=db_name).set(numbackends)
+                        self.postgres_xact_commit.labels(database=db_name).set(xact_commit)
+                        self.postgres_xact_rollback.labels(database=db_name).set(xact_rollback)
+                        self.postgres_blks_read.labels(database=db_name).set(blks_read)
+                        self.postgres_blks_hit.labels(database=db_name).set(blks_hit)
+                        self.postgres_tup_returned.labels(database=db_name).set(tup_returned)
+                        self.postgres_tup_fetched.labels(database=db_name).set(tup_fetched)
+                        self.postgres_tup_inserted.labels(database=db_name).set(tup_inserted)
+                        self.postgres_tup_updated.labels(database=db_name).set(tup_updated)
+                        self.postgres_tup_deleted.labels(database=db_name).set(tup_deleted)
+
+                    # Cluster-level max connections
+                    cur.execute('SELECT setting::int FROM pg_settings WHERE name = %s', ('max_connections',))
+                    max_conn = cur.fetchone()
+                    if max_conn:
+                        self.postgres_max_connections.labels(database='cluster').set(max_conn[0])
+
+                    # Database size for every database
+                    cur.execute(
+                        "SELECT datname, pg_database_size(datname) FROM pg_database WHERE datname NOT IN ('template0', 'template1')"
+                    )
+                    for db_name, size in cur.fetchall():
+                        self.postgres_database_size.labels(database=db_name).set(size)
+
+                    # Connection state counts across the whole cluster
+                    cur.execute(
+                        "SELECT datname, state, count(*) FROM pg_stat_activity GROUP BY datname, state"
+                    )
+                    for db_name, state, count in cur.fetchall():
+                        self.postgres_connection_state.labels(database=db_name, state=state or 'unknown').set(count)
+        except Exception as e:
+            logger.warning(f"Error collecting PostgreSQL metrics: {e}")
 
     def collect_system_cpu(self):
         try:
@@ -237,6 +384,36 @@ class MetricsCollector:
 
         except Exception as e:
             logger.error(f"Error collecting CPU metrics: {e}")
+
+    def collect_system_io_wait(self):
+        try:
+            proc_path = "/host/proc/stat" if os.path.exists("/host/proc/stat") else "/proc/stat"
+            with open(proc_path, "r") as f:
+                cpu_line = f.readline().split()[1:]
+                cpu_times = list(map(int, cpu_line))
+
+            # Linux cpu fields begin with: user nice system idle iowait ...
+            iowait_time = cpu_times[4] if len(cpu_times) > 4 else 0
+            total_time = sum(cpu_times)
+
+            if not hasattr(self, "_last_iowait_total"):
+                self._last_iowait_total = iowait_time
+                self._last_iowait_cpu_total = total_time
+                self.system_io_wait_percent.set(0)
+                return
+
+            total_diff = total_time - self._last_iowait_cpu_total
+            iowait_diff = iowait_time - self._last_iowait_total
+
+            if total_diff <= 0 or iowait_diff < 0:
+                self.system_io_wait_percent.set(0)
+            else:
+                self.system_io_wait_percent.set((iowait_diff / total_diff) * 100.0)
+
+            self._last_iowait_total = iowait_time
+            self._last_iowait_cpu_total = total_time
+        except Exception as e:
+            logger.error(f"Error collecting system io wait metrics: {e}")
 
     def collect_system_memory(self):
         try:
@@ -420,6 +597,9 @@ class MetricsCollector:
             logger.warning(f"Docker daemon not responding: {e}")
             return
 
+        containers = self.docker_client.containers.list()
+        logger.debug("Collecting Docker metrics for %s running containers", len(containers))
+
         def process_container(container):
             try:
                 labels = container.labels
@@ -499,7 +679,9 @@ class MetricsCollector:
                 logger.warning(f"Error collecting metrics for container {container.name}: {e}")
 
         with ThreadPoolExecutor(max_workers=10) as executor:
-            executor.map(process_container, self.docker_client.containers.list())
+            list(executor.map(process_container, containers))
+
+        logger.debug("Finished Docker metrics collection for %s running containers", len(containers))
 
     def collect_docker_compose_status(self, project_name=None):
         if not self.docker_client:
@@ -507,6 +689,7 @@ class MetricsCollector:
 
         try:
             containers = self.docker_client.containers.list(all=True)
+            running_count = 0
             for container in containers:
                 labels = container.labels
                 proj = labels.get('com.docker.compose.project', 'unknown')
@@ -518,6 +701,8 @@ class MetricsCollector:
                     container.reload()  # Refresh container info
                     running = container.attrs['State'].get('Running', False)
                     status = 1 if running else 0
+                    if running:
+                        running_count += 1
                 except Exception as e:
                     logger.warning(f"Error reading state for container {container.name}: {e}")
                     status = 0
@@ -528,17 +713,33 @@ class MetricsCollector:
                 ).set(status)
                 self.compose_container_status_flat.labels(name=container.name).set(status)
 
+            logger.debug(
+                "Collected Docker Compose status for %s containers (%s running)",
+                len(containers),
+                running_count,
+            )
+
         except Exception as e:
             logger.error(f"Error collecting Docker Compose container status: {e}")
 
     def collect_all_metrics(self, collect_docker=False):
+        started_at = time.time()
+        self.collection_runs += 1
+        logger.debug(
+            "Starting metrics collection cycle %s (collect_docker=%s)",
+            self.collection_runs,
+            collect_docker,
+        )
+
         self.collect_server_status()
         self.collect_system_cpu()
+        self.collect_system_io_wait()
         self.collect_system_memory()
         self.collect_system_swap()
         self.collect_disk_usage()
         self.collect_system_network_io()
         self.collect_system_block_io()
+        self.collect_postgres_metrics()
         self.collect_top_processes()
 
         # Always collect container status every loop
@@ -549,14 +750,42 @@ class MetricsCollector:
         if collect_docker and self.docker_client:
             connected, status = self.test_docker_connectivity()
             if connected:
+                logger.debug("Docker connectivity check passed: %s", status)
                 self.collect_docker_metrics()
+            else:
+                logger.warning("Skipping Docker metrics collection: %s", status)
+
+        duration = time.time() - started_at
+        if self.collection_runs == 1 or self.collection_runs % self.summary_log_every == 0:
+            logger.info(
+                "Completed metrics collection cycle %s in %.2fs (collect_docker=%s, tracked_host_interfaces=%s, tracked_host_devices=%s, tracked_container_networks=%s, tracked_container_devices=%s)",
+                self.collection_runs,
+                duration,
+                collect_docker,
+                len(self._previous_host_network),
+                len(self._previous_host_block),
+                len(self._previous_container_network),
+                len(self._previous_container_block),
+            )
+        else:
+            logger.debug(
+                "Completed metrics collection cycle %s in %.2fs",
+                self.collection_runs,
+                duration,
+            )
 
 def main():
     metrics_port = int(os.getenv('METRICS_PORT', 8000))
     collection_interval = int(os.getenv('COLLECTION_INTERVAL', 5))
     docker_collection_interval = int(os.getenv('DOCKER_COLLECTION_INTERVAL', 30))
 
-    logger.info(f"Starting metrics collector on port {metrics_port}")
+    logger.info(
+        "Starting metrics collector (port=%s, collection_interval=%ss, docker_collection_interval=%ss, log_level=%s)",
+        metrics_port,
+        collection_interval,
+        docker_collection_interval,
+        log_level,
+    )
     start_http_server(metrics_port)
     collector = MetricsCollector()
     loop_counter = 0
